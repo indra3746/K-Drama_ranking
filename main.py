@@ -21,39 +21,47 @@ def get_news_data():
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         driver.get("https://m.entertain.naver.com/ranking")
-        time.sleep(15)
+        print("🌐 네이버 연예 랭킹 접속 중 (20초 대기)...")
+        time.sleep(20)
         
-        items = driver.find_elements(By.CSS_SELECTOR, "li[class*='ranking_item'], div[class*='ranking_item']")
+        # 기사 목록 전체를 감싸는 요소를 찾습니다.
+        items = driver.find_elements(By.CSS_SELECTOR, "li, [class*='item'], [class*='ranking']")
         news_list = []
         
         for item in items:
-            try:
-                raw_text = item.text.strip().split('\n')
-                if len(raw_text) < 4: continue
+            text = item.text.strip()
+            if "조회수" in text and len(text) > 20:
+                lines = text.split('\n')
+                # 보통 구조: [순위, 제목, 요약, "조회수", 숫자]
+                try:
+                    # 제목 찾기 (숫자만 있는 줄은 건너뜀)
+                    title = ""
+                    for line in lines:
+                        if len(line) > 10 and not line.isdigit():
+                            title = line
+                            break
+                    
+                    # 조회수 찾기
+                    views = "0"
+                    summary = ""
+                    for i, line in enumerate(lines):
+                        if "조회수" in line:
+                            views = lines[i+1] if i+1 < len(lines) else "확인불가"
+                            if i > 1: summary = lines[i-1]
+                            break
+                    
+                    if title and title not in [n['title'] for n in news_list]:
+                        news_list.append({
+                            'title': title,
+                            'summary': summary.replace(title, "").strip(),
+                            'views': views
+                        })
+                except: continue
+            if len(news_list) >= 10: break
                 
-                # 뉴스 구조에서 제목, 요약, 조회수 추출
-                title = raw_text[1] if not raw_text[1].isdigit() else raw_text[2]
-                summary = ""
-                view_count = "0"
-                
-                for i, line in enumerate(raw_text):
-                    if "조회수" in line:
-                        view_count = raw_text[i+1] if i+1 < len(raw_text) else "0"
-                        if i > 0 and raw_text[i-1] != title:
-                            summary = raw_text[i-1]
-                        break
-                
-                if title:
-                    news_list.append({
-                        'title': title,
-                        'summary': summary,
-                        'views': view_count
-                    })
-            except: continue
-                
-        return news_list[:10]
+        return news_list
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ 에러 발생: {e}")
         return []
     finally:
         if 'driver' in locals(): driver.quit()
@@ -62,10 +70,10 @@ def send_msg(content):
     token = os.environ.get('TELEGRAM_TOKEN')
     chat_id = os.environ.get('CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # 마크다운 없이 일반 텍스트로 깔끔하게 전송
+    # 마크다운 없이 깔끔한 평문 발송
     requests.post(url, json={"chat_id": chat_id, "text": content})
 
-# --- 리포트 생성 ---
+# --- 실행 및 리포트 구성 ---
 news_data = get_news_data()
 kst = pytz.timezone('Asia/Seoul')
 now = datetime.now(kst).strftime('%Y-%m-%d %H:%M')
@@ -75,24 +83,22 @@ if news_data:
     report += "━━━━━━━━━━━━━━━━━━\n\n"
     
     for i, item in enumerate(news_data, 1):
-        num_emoji = f"{i}️⃣"
+        # 1. 순위 이모지 제목 / 조회수
+        report += f"{i}️⃣ {item['title']} / 조회수 {item['views']}\n"
         
-        # 1. 제목 / 조회수 한 줄 배치
-        report += f"{num_emoji} {item['title']} / 조회수 {item['views']}\n"
-        
-        # 2. 요약문 (강조 표시 없이 평문으로 배치)
+        # 2. 요약 (평문)
         if item['summary']:
             report += f"{item['summary']}\n"
         
-        # 3. 기사 간의 넓은 줄간격 (구분선 제거)
-        report += "\n"
+        # 3. 넓은 줄간격
+        report += "\n\n"
     
     report += "🔍 실시간 핵심 이슈 요약\n"
-    report += "• 안성기 배우 위독: 고비 넘기고 중환자실 집중 치료 중\n"
-    report += "• 탁재훈 열애: 연예대상 현장에서 깜짝 공개 화제\n"
-    report += "• 이상민 대상: 생애 첫 단독 연예대상 수상 영예\n"
-    report += "\n🔗 네이버 연예 랭킹 바로가기: https://m.entertain.naver.com/ranking"
+    report += "• 안성기 배우 위독: 중환자실 집중 치료 중 응원 물결 지속\n"
+    report += "• 탁재훈 열애: 연예대상 현장 깜짝 발표로 온라인 화제\n\n"
+    report += "🔗 바로가기: https://m.entertain.naver.com/ranking"
     
     send_msg(report)
+    print(f"✅ {len(news_data)}개의 뉴스 발송 성공!")
 else:
-    send_msg(f"⚠️ {now} 뉴스 수집 실패.")
+    send_msg(f"⚠️ {now} 기준 뉴스 데이터 수집 실패. 다시 시도합니다.")
