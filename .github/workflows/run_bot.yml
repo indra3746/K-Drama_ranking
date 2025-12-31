@@ -9,16 +9,21 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9' # 하이픈(-)으로 수정했습니다.
+          python-version: '3.9' # 하이픈(-) 사용 확인
+
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install selenium requests pytz webdriver-manager
+
       - name: Execute script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          CHAT_ID: ${{ secrets.CHAT_ID! }}
         run: python main.py
