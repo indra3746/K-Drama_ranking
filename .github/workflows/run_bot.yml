@@ -1,19 +1,26 @@
 name: Hourly News Bot
+
 on:
   schedule:
     - cron: '0 * * * *'
   workflow_dispatch:
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'  # 하이픈(-)으로 수정 완료
+          python-version: '3.9'
+
       - name: Install dependencies
-        run: pip install selenium requests pytz webdriver-manager
+        run: |
+          pip install selenium requests pytz webdriver-manager
+
       - name: Execute script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
