@@ -1,9 +1,12 @@
-name: Run Nielsen Ranking Bot
+name: Run K-Drama Ranking Bot
 
 on:
   schedule:
-    # 매일 오전 8시 (한국시간) = UTC 23시
-    - cron: '0 23 * * *'
+    # 한국 시간 매일 오전 9시 실행 (UTC 00:00)
+    # 분 시 일 월 요일
+    - cron: '0 0 * * *'
+  
+  # 수동으로도 실행 가능하게 유지
   workflow_dispatch:
 
 jobs:
@@ -19,7 +22,6 @@ jobs:
         with:
           python-version: '3.9'
 
-      # [중요] selenium 삭제, requests만 설치 (훨씬 빠름)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
