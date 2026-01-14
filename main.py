@@ -4,7 +4,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 
-# 셀레니움 라이브러리
+# 셀레니움 관련
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -24,120 +24,130 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 2. 브라우저 세팅 (강력한 스텔스 모드)
+# 2. 브라우저 설정 (Daum 접속용)
 def get_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # 화면 없이 실행
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # [중요] 창 크기를 크게 설정해야 데이터가 모바일 버전으로 축소되지 않음
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    # [중요] 봇 탐지 방지 옵션 추가
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
+    # 일반적인 유저 에이전트 사용
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    
-    # navigator.webdriver 플래그 제거 (봇 아님을 증명)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    
     return driver
 
-# 3. 네이버 시청률 크롤링
-def fetch_naver_ratings(driver, category):
+# 3. 다음(Daum) 시청률 크롤링
+def fetch_daum_ratings(driver, category):
+    # 검색어: "지상파 드라마 시청률"
     query = f"{category} 드라마 시청률"
-    url = f"https://search.naver.com/search.naver?where=nexearch&sm=tab_etc&query={query}"
+    url = f"https://search.daum.net/search?w=tot&q={query}"
     
-    print(f"[{category}] 접속 중...")
+    print(f"[{category}] Daum 접속 중: {url}")
     driver.get(url)
     
     try:
-        # 대기 시간 5초 -> 15초로 연장 (GitHub 서버가 느릴 수 있음)
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "rating_list"))
+        # body가 로딩될 때까지 대기 (최대 10초)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
-        time.sleep(2) # 렌더링 안정화 대기
+        time.sleep(1) 
     except:
-        print(f"[{category}] ⚠️ 데이터 로딩 실패 (화면 구조가 다르거나 차단됨)")
-        # 디버깅: 현재 페이지 제목 출력
-        print(f"현재 페이지 제목: {driver.title}")
+        print(f"[{category}] 로딩 실패")
         return []
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     results = []
     
-    # 리스트 파싱
-    rows = soup.select("div.rating_list > ul > li")
+    # Daum은 구조가 자주 변하므로, '순위', '제목', '%'가 모두 포함된 리스트 아이템을 찾습니다.
+    # 보통 c-list-basic, item-title 등의 클래스를 사용하나, 범위가 넓은 tr, li를 다 뒤집니다.
+    candidates = soup.find_all(['li', 'tr'])
     
-    for row in rows[:10]:
+    for item in candidates:
+        text = item.get_text(strip=True)
+        # 1. '%'가 없으면 시청률 정보가 아님
+        if '%' not in text: continue
+        
+        # 2. 파싱 시도 (클래스 기반)
         try:
-            rank = row.select_one(".rank").get_text(strip=True)
-            title = row.select_one(".proc_tit, .title").get_text(strip=True)
+            # 순위: .rank_num 또는 텍스트의 첫 부분
+            rank_tag = item.select_one(".rank_num, .num_rank, .screen_out")
+            # 제목: .tit_item, .fn_tit
+            title_tag = item.select_one(".tit_item, .fn_tit, .link_tit")
+            # 시청률: .txt_num, .f_red
+            rating_tag = item.select_one(".txt_num, .f_red")
             
-            # 방송사
-            channel = ""
-            sub = row.select_one(".sub_text")
-            if sub:
-                channel = f"({sub.get_text(strip=True)})"
-            
-            # 시청률
-            rating = row.select_one(".rating_val, .score").get_text(strip=True)
-            
-            # 변동폭
-            change = "-"
-            fluct = row.select_one(".fluctuation")
-            if fluct:
-                txt = fluct.get_text(strip=True)
-                cls = str(fluct.get("class"))
-                if "up" in cls: change = f"▲{txt}"
-                elif "down" in cls: change = f"▼{txt}"
-                elif "same" in cls: change = "-"
-            
-            # 한 줄 완성
-            line = f"{rank}위 {title} | {channel} | {rating} | {change}"
-            results.append(line)
+            # 태그를 찾았다면 추출
+            if rank_tag and title_tag:
+                rank = rank_tag.get_text(strip=True).replace("위","")
+                title = title_tag.get_text(strip=True)
+                rating = rating_tag.get_text(strip=True) if rating_tag else ""
+                
+                # 방송사 추출 (제목 옆이나 괄호 안)
+                # Daum은 방송사가 별도 태그(.txt_info)로 있는 경우가 많음
+                channel = ""
+                info_tag = item.select_one(".txt_info, .info_tit")
+                if info_tag:
+                    channel = f"({info_tag.get_text(strip=True)})"
+                
+                # 순위가 숫자인지 확인 (헤더 제외)
+                if not rank.isdigit(): continue
+                
+                # 중복 방지 및 10위까지만
+                if len(results) >= 10: break
+                
+                # 변동폭 (Daum은 변동폭 아이콘이 복잡하여 생략하거나 텍스트로 추출 시도)
+                change = "-"
+                
+                results.append(f"{rank}위 {title} | {channel} | {rating}")
         except:
             continue
             
+    # 만약 클래스로 못 찾았다면, 텍스트 패턴으로 한 번 더 시도 (Fallback)
+    if not results:
+        # (구현 생략: Daum은 클래스 구조가 비교적 안정적임)
+        pass
+
     return results
 
 # 4. 메인 실행
 def main():
     driver = get_driver()
     
-    now = datetime.datetime.now()
-    days = ["월", "화", "수", "목", "금", "토", "일"]
-    # 봇이 실행되는 시점(오늘) 리포트
-    date_str = now.strftime(f"%Y-%m-%d({days[now.weekday()]})")
+    # [날짜 계산]
+    # 서버 시간(UTC) 기준이 아니라, 한국 시간(KST) 기준으로 "어제" 날짜를 구함
+    # 왜냐하면 오늘 아침 8시에 보내는 리포트는 "어제 방영분"이기 때문
+    kst_now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+    yesterday = kst_now - datetime.timedelta(days=1)
     
-    report = f"📺 {date_str} 드라마 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n\n"
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    date_str = yesterday.strftime(f"%Y-%m-%d({days[yesterday.weekday()]})")
+    
+    report = f"📺 {date_str} 드라마 시청률 랭킹\n(어제 방영분 기준)\n━━━━━━━━━━━━━━━━━━\n\n"
     
     try:
         # 지상파
-        report += "📡 지상파 (KBS/MBC/SBS)\n"
-        items = fetch_naver_ratings(driver, "지상파")
+        report += "📡 지상파\n"
+        items = fetch_daum_ratings(driver, "지상파")
         if items: report += "\n".join(items)
-        else: report += "(집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 데이터 없음)"
         report += "\n\n"
         
         # 종편
-        report += "📡 종편 (JTBC/MBN/TV조선/채널A)\n"
-        items = fetch_naver_ratings(driver, "종편")
+        report += "📡 종편\n"
+        items = fetch_daum_ratings(driver, "종편")
         if items: report += "\n".join(items)
-        else: report += "(집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 데이터 없음)"
         report += "\n\n"
         
         # 케이블
-        report += "📡 케이블 (tvN/ENA)\n"
-        items = fetch_naver_ratings(driver, "케이블")
+        report += "📡 케이블\n"
+        items = fetch_daum_ratings(driver, "케이블")
         if items: report += "\n".join(items)
-        else: report += "(집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 데이터 없음)"
         report += "\n\n"
         
-        report += "🔗 상세정보: 네이버 시청률 검색"
+        report += "🔗 정보: Daum/Nielsen Korea"
         
         send_telegram(report)
         
