@@ -4,7 +4,7 @@ import datetime
 import os
 import re
 import traceback
-import time # 딜레이를 위해 필수
+import time
 
 # 1. 텔레그램 전송
 def send_telegram(text):
@@ -17,12 +17,31 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 2. 위키백과에서 드라마 제목 자동 수집 (Whitelist)
+# ==========================================
+# [안전장치] 위키백과에 없을 경우를 대비한 수동 리스트 (인기작 위주)
+MUST_INCLUDE = [
+    "결혼하자맹꽁아", "친절한선주씨", "스캔들", "심장을훔친게임", 
+    "용감무쌍용수정", "세번째결혼", "우아한제국", "나의해리에게", 
+    "조립식가족", "이혼숙려캠프", "보물섬", "모텔캘리포니아", 
+    "언더커버하이스쿨", "협상의기술", "러브미", "스프링피버", "아이돌아이"
+]
+# ==========================================
+
+# 문자열 정규화 (모든 공백, 특수문자 제거)
+def normalize(text):
+    if not text: return ""
+    # 한글, 영문, 숫자만 남기고 다 날림
+    return re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
+
+# 2. 위키백과 DB 구축
 def get_wiki_drama_list():
     print("📋 위키백과 드라마 DB 구축 중...")
     drama_set = set()
     
-    # 작년 말 ~ 올해 드라마를 모두 커버하기 위해 2개 연도 검색
+    # 안전장치 먼저 등록
+    for d in MUST_INCLUDE:
+        drama_set.add(normalize(d))
+    
     urls = [
         "https://ko.wikipedia.org/wiki/2025년_대한민국의_텔레비전_드라마_목록",
         "https://ko.wikipedia.org/wiki/2026년_대한민국의_텔레비전_드라마_목록"
@@ -34,72 +53,55 @@ def get_wiki_drama_list():
     
     for url in urls:
         try:
-            print(f"   접속: {url} ...")
             res = requests.get(url, headers=headers, timeout=10)
             soup = BeautifulSoup(res.text, 'html.parser')
             
-            # 위키백과 'wikitable' 클래스를 가진 표들 탐색
             tables = soup.select("table.wikitable")
             for table in tables:
                 rows = table.select("tr")
                 for row in rows:
                     cols = row.select("td")
-                    # 보통 제목은 앞쪽(1~2번째) 칸에 위치함
                     for col in cols[:3]:
-                        # 1) <i> 태그 (기울임꼴) 안에 있는 텍스트는 99% 드라마 제목
-                        italic = col.find("i")
-                        if italic:
-                            title = italic.get_text(strip=True)
-                            drama_set.add(title.replace(" ", ""))
-                        
-                        # 2) 링크(a) 텍스트 중 따옴표가 있거나 긴 텍스트
-                        link = col.find("a")
-                        if link:
-                            t = link.get_text(strip=True)
-                            # '보기', '편집' 등 제외
-                            if len(t) > 1 and "드라마" not in t:
-                                drama_set.add(t.replace(" ", ""))
-            
-            time.sleep(1) # 위키 서버 부하 방지
-            
+                        # i 태그 또는 a 태그 안의 텍스트 추출
+                        targets = col.find_all(['i', 'a'])
+                        for t in targets:
+                            text = t.get_text(strip=True)
+                            if len(text) > 1 and "드라마" not in text:
+                                drama_set.add(normalize(text))
+            time.sleep(1)
         except Exception as e:
             print(f"   ⚠️ 위키 접속 실패: {e}")
-
-    print(f"✅ 위키백과 DB 확보 완료: 총 {len(drama_set)}개 드라마")
+            
+    print(f"✅ 비교군(Whitelist) 확보 완료: 총 {len(drama_set)}개 드라마")
     return drama_set
 
-# 3. 닐슨코리아 데이터 수집 (세션 사용 + 딜레이)
-def fetch_nielsen_data(session, url, type_name):
-    print(f"[{type_name}] 닐슨 접속 시도...")
+# 3. 닐슨코리아 데이터 수집
+def fetch_nielsen_data(url, type_name):
+    print(f"[{type_name}] 닐슨 접속 시도: {url}")
+    
+    # [중요] 매번 새로운 헤더 사용 (세션 꼬임 방지)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.nielsenkorea.co.kr/',
+        'Cache-Control': 'no-cache'
+    }
     
     try:
-        # 접속 전 2초 딜레이 (사람인 척)
-        time.sleep(2)
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.nielsenkorea.co.kr/',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-        }
-        
-        res = session.get(url, headers=headers, timeout=20)
-        res.encoding = 'euc-kr' # 인코딩 필수
+        res = requests.get(url, headers=headers, timeout=20)
+        res.encoding = 'euc-kr' 
         
         soup = BeautifulSoup(res.text, 'html.parser')
         results = []
         
         table = soup.find("table", class_="ranking_tb")
-        
-        # 테이블이 없는 경우 (차단 또는 로딩 실패)
         if not table:
-            print(f"   ⚠️ [{type_name}] 테이블을 찾을 수 없음. HTML 구조 확인 필요.")
-            # 디버깅: 혹시 리다이렉트 되었는지 확인
-            if "로그인" in res.text or "Wait" in res.text:
-                print("   🚫 접근 제한됨 (Login/Block)")
+            print(f"   ❌ [{type_name}] 테이블 못 찾음 (차단 또는 로딩 실패)")
+            # 디버깅용: HTML 일부 출력
+            print(f"   📄 HTML 내용 일부: {res.text[:200]}")
             return []
             
         rows = table.find_all("tr")
-        print(f"   ✅ 데이터 테이블 발견 ({len(rows)}행)")
+        print(f"   ℹ️ {len(rows)}행 데이터 발견. 매칭 시작...")
         
         for row in rows:
             cols = row.find_all("td")
@@ -110,6 +112,7 @@ def fetch_nielsen_data(session, url, type_name):
                 raw_title = cols[2].get_text(strip=True)
                 rating = cols[3].get_text(strip=True)
                 
+                # 시청률 숫자 변환
                 try:
                     rating_val = float(rating.replace("%", "").strip())
                 except:
@@ -126,51 +129,55 @@ def fetch_nielsen_data(session, url, type_name):
         return results
         
     except Exception as e:
-        print(f"   ❌ [{type_name}] 에러: {e}")
+        print(f"   ❌ [{type_name}] 접속 에러: {e}")
         return []
 
-# 4. 필터링 로직 (위키 DB vs 닐슨 Raw)
+# 4. 필터링 로직 (핵심 수정: 정규화 비교)
 def filter_dramas(nielsen_data, wiki_db):
     filtered = []
     
     for item in nielsen_data:
         raw_title = item['title']
-        clean_raw = raw_title.replace(" ", "")
+        
+        # 1. 괄호 안의 내용 추출 (닐슨 데이터 정제)
+        # 예: "일일드라마(결혼하자 맹꽁아)" -> "결혼하자 맹꽁아"
+        match = re.search(r'\((.*?)\)', raw_title)
+        extracted = match.group(1).strip() if match else raw_title
+        
+        # 2. 정규화 (띄어쓰기 제거)
+        norm_raw = normalize(raw_title)
+        norm_ext = normalize(extracted)
         
         is_match = False
-        display_title = raw_title
+        display_title = extracted # 기본 표시 제목
         
-        # 1) 괄호 안의 제목 추출
-        # 예: 일일드라마(결혼하자맹꽁아) -> 결혼하자맹꽁아
-        match = re.search(r'\((.*?)\)', raw_title)
-        extracted = ""
-        if match:
-            extracted = match.group(1).strip()
+        # 매칭 시도 1: 괄호 안 내용이 DB에 있는가?
+        if norm_ext in wiki_db:
+            is_match = True
             
-        # 매칭 검사 1: 괄호 안 내용이 위키 DB에 있는가?
-        if extracted:
-            if extracted.replace(" ", "") in wiki_db:
-                is_match = True
-                display_title = extracted
-        
-        # 매칭 검사 2: 위키 제목이 닐슨 원본에 포함되는가?
+        # 매칭 시도 2: 원본 제목이 DB에 포함되는가?
         if not is_match:
-            for wiki_t in wiki_db:
-                # 닐슨: "주말드라마오징어게임2" vs 위키: "오징어게임2"
-                if wiki_t in clean_raw and len(wiki_t) > 2:
+            for db_title in wiki_db:
+                if db_title in norm_raw and len(db_title) > 2:
                     is_match = True
-                    display_title = wiki_t
+                    display_title = raw_title # 원본 사용
                     break
         
-        # 매칭 검사 3: (안전장치) '드라마', '미니시리즈' 단어 포함시 무조건 통과
+        # 매칭 시도 3: '드라마', '미니시리즈' 키워드 포함 시 무조건 통과 (신작 대비)
         if not is_match:
-            if any(k in clean_raw for k in ["드라마", "미니시리즈", "연속극"]):
+            if any(k in norm_raw for k in ["드라마", "미니시리즈", "연속극"]):
                 is_match = True
-                if extracted: display_title = extracted # 기왕이면 괄호 안 내용으로
-        
+                
         if is_match:
+            # 로그 출력 (무엇이 매칭되었는지 확인)
+            print(f"      ✅ 매칭 성공: {raw_title} -> {display_title}")
             item['display_title'] = display_title
             filtered.append(item)
+        else:
+            # 매칭 실패 로그 (왜 안 나왔는지 확인용)
+            # 너무 많으면 주석 처리하세요
+            # print(f"      🗑️ 제외됨: {raw_title}")
+            pass
             
     filtered.sort(key=lambda x: x['rating_val'], reverse=True)
     return filtered
@@ -185,20 +192,20 @@ def main():
         
         print(f"--- 실행 시작 ({date_str} 기준) ---")
         
-        # 1. 위키백과에서 리스트 확보
+        # 1. 위키백과 DB
         wiki_db = get_wiki_drama_list()
         
-        # 2. 닐슨 데이터 수집 (세션 하나로 유지)
-        session = requests.Session()
-        
+        # 2. 지상파 수집
         url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00"
-        raw_t = fetch_nielsen_data(session, url_t, "지상파")
-        
-        url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
-        raw_c = fetch_nielsen_data(session, url_c, "종편/케이블")
-        
-        # 3. 매칭 및 필터링
+        raw_t = fetch_nielsen_data(url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
+        
+        print("⏳ 케이블 수집을 위해 5초 대기 (서버 부하 방지)...")
+        time.sleep(5) # [중요] 딜레이 추가
+        
+        # 3. 종편/케이블 수집
+        url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
+        raw_c = fetch_nielsen_data(url_c, "종편/케이블")
         final_c_all = filter_dramas(raw_c, wiki_db)
         
         # 4. 종편/케이블 분리
@@ -207,8 +214,8 @@ def main():
         final_c = []
         
         for item in final_c_all:
-            ch_upper = item['channel'].upper().replace(" ", "")
-            if any(j in ch_upper for j in jongpyeon_chs):
+            ch_upper = normalize(item['channel']).upper()
+            if any(normalize(j).upper() in ch_upper for j in jongpyeon_chs):
                 final_j.append(item)
             else:
                 final_c.append(item)
