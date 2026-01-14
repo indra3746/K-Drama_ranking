@@ -4,7 +4,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 
-# 가상 브라우저(Selenium) 관련 라이브러리
+# 셀레니움 라이브러리
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -13,7 +13,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# 1. 텔레그램 전송 함수
+# 1. 텔레그램 전송
 def send_telegram(text):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
@@ -24,51 +24,60 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 2. 브라우저 세팅 함수
+# 2. 브라우저 세팅 (강력한 스텔스 모드)
 def get_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless") # 화면 없이 실행
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 봇 탐지 방지용 헤더
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+    # [중요] 창 크기를 크게 설정해야 데이터가 모바일 버전으로 축소되지 않음
+    chrome_options.add_argument("--window-size=1920,1080")
+    
+    # [중요] 봇 탐지 방지 옵션 추가
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    
+    # navigator.webdriver 플래그 제거 (봇 아님을 증명)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
     return driver
 
-# 3. 네이버 크롤링 (Selenium 사용)
+# 3. 네이버 시청률 크롤링
 def fetch_naver_ratings(driver, category):
-    # 검색어: "지상파 드라마 시청률", "종편 드라마 시청률" 등
     query = f"{category} 드라마 시청률"
     url = f"https://search.naver.com/search.naver?where=nexearch&sm=tab_etc&query={query}"
     
-    print(f"[{category}] 접속 중: {url}")
+    print(f"[{category}] 접속 중...")
     driver.get(url)
     
-    # 페이지 로딩 대기 (최대 5초)
     try:
-        # 시청률 리스트가 뜰 때까지 기다림
-        WebDriverWait(driver, 5).until(
+        # 대기 시간 5초 -> 15초로 연장 (GitHub 서버가 느릴 수 있음)
+        WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CLASS_NAME, "rating_list"))
         )
-        time.sleep(1) # 확실한 로딩을 위해 1초 추가 대기
+        time.sleep(2) # 렌더링 안정화 대기
     except:
-        print(f"[{category}] 데이터 로딩 시간 초과 또는 없음")
+        print(f"[{category}] ⚠️ 데이터 로딩 실패 (화면 구조가 다르거나 차단됨)")
+        # 디버깅: 현재 페이지 제목 출력
+        print(f"현재 페이지 제목: {driver.title}")
         return []
 
-    # 로딩된 페이지의 소스 가져오기
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     results = []
     
     # 리스트 파싱
     rows = soup.select("div.rating_list > ul > li")
     
-    for row in rows[:10]: # 10위까지만
+    for row in rows[:10]:
         try:
             rank = row.select_one(".rank").get_text(strip=True)
             title = row.select_one(".proc_tit, .title").get_text(strip=True)
             
-            # 방송사 (sub_text 또는 링크 안에서 찾기)
+            # 방송사
             channel = ""
             sub = row.select_one(".sub_text")
             if sub:
@@ -87,7 +96,9 @@ def fetch_naver_ratings(driver, category):
                 elif "down" in cls: change = f"▼{txt}"
                 elif "same" in cls: change = "-"
             
-            results.append(f"{rank}위 {title} | {channel} | {rating} | {change}")
+            # 한 줄 완성
+            line = f"{rank}위 {title} | {channel} | {rating} | {change}"
+            results.append(line)
         except:
             continue
             
@@ -95,34 +106,35 @@ def fetch_naver_ratings(driver, category):
 
 # 4. 메인 실행
 def main():
-    driver = get_driver() # 브라우저 켜기
+    driver = get_driver()
     
     now = datetime.datetime.now()
     days = ["월", "화", "수", "목", "금", "토", "일"]
+    # 봇이 실행되는 시점(오늘) 리포트
     date_str = now.strftime(f"%Y-%m-%d({days[now.weekday()]})")
     
     report = f"📺 {date_str} 드라마 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n\n"
     
     try:
-        # 1. 지상파
+        # 지상파
         report += "📡 지상파 (KBS/MBC/SBS)\n"
         items = fetch_naver_ratings(driver, "지상파")
         if items: report += "\n".join(items)
-        else: report += " (집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 방영작 없음)"
         report += "\n\n"
         
-        # 2. 종편
+        # 종편
         report += "📡 종편 (JTBC/MBN/TV조선/채널A)\n"
         items = fetch_naver_ratings(driver, "종편")
         if items: report += "\n".join(items)
-        else: report += " (집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 방영작 없음)"
         report += "\n\n"
         
-        # 3. 케이블
+        # 케이블
         report += "📡 케이블 (tvN/ENA)\n"
         items = fetch_naver_ratings(driver, "케이블")
         if items: report += "\n".join(items)
-        else: report += " (집계 중 또는 방영작 없음)"
+        else: report += "(집계 중 또는 방영작 없음)"
         report += "\n\n"
         
         report += "🔗 상세정보: 네이버 시청률 검색"
@@ -130,9 +142,9 @@ def main():
         send_telegram(report)
         
     except Exception as e:
-        print(f"전체 에러 발생: {e}")
+        print(f"전체 에러: {e}")
     finally:
-        driver.quit() # 브라우저 끄기
+        driver.quit()
 
 if __name__ == "__main__":
     main()
