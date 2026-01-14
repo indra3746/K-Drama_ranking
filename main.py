@@ -74,3 +74,124 @@ def clean_and_check_title(raw_title):
 # 3. 닐슨코리아 파싱
 def fetch_nielsen_ratings(url, type_name):
     print(f"[{type_name}] 데이터 수집 시작: {url}")
+    # [중요] 헤더를 보강하여 차단을 방지함
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.nielsenkorea.co.kr/',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
+    
+    try:
+        # 타임아웃을 30초로 늘림 (서버가 느릴 때 대비)
+        res = requests.get(url, headers=headers, timeout=30)
+        res.encoding = 'euc-kr' # 인코딩 고정
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
+        results = []
+        
+        table = soup.find("table", class_="ranking_tb")
+        if not table:
+            print(f"⚠️ [{type_name}] 테이블 없음 (IP 차단 가능성)")
+            return []
+            
+        rows = table.find_all("tr")
+        print(f"   ℹ️ {len(rows)}개 행 발견")
+        
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 4: continue 
+            
+            try:
+                channel = cols[1].get_text(strip=True)
+                raw_title = cols[2].get_text(strip=True)
+                rating = cols[3].get_text(strip=True)
+                
+                # 제목 검증
+                clean_title = clean_and_check_title(raw_title)
+                
+                if clean_title:
+                    try:
+                        rating_val = float(rating.replace("%", "").strip())
+                    except:
+                        rating_val = 0.0
+                        
+                    results.append({
+                        "channel": channel,
+                        "title": clean_title,
+                        "rating": rating,
+                        "rating_val": rating_val
+                    })
+            except Exception as e:
+                print(f"   ⚠️ 파싱 에러: {e}")
+                continue
+            
+        return results
+        
+    except Exception as e:
+        print(f"[{type_name}] 접속 에러: {e}")
+        raise e # 메인으로 에러를 던짐
+
+# 4. 메인 실행 (안전장치 포함)
+def main():
+    try:
+        kst_now = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+        yesterday = kst_now - datetime.timedelta(days=1)
+        days = ["월", "화", "수", "목", "금", "토", "일"]
+        date_str = yesterday.strftime(f"%Y-%m-%d({days[yesterday.weekday()]})")
+        
+        print(f"--- 실행 시작 ({date_str} 기준) ---")
+        
+        # 1. 지상파
+        url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00"
+        data_t = fetch_nielsen_ratings(url_t, "지상파")
+        
+        # 2. 종편/케이블
+        url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
+        data_c = fetch_nielsen_ratings(url_c, "종편/케이블")
+        
+        # 3. 데이터 정렬 및 분리
+        data_t.sort(key=lambda x: x['rating_val'], reverse=True)
+        
+        jongpyeon_chs = ["JTBC", "MBN", "TV CHOSUN", "TV조선", "채널A"]
+        list_j = []
+        list_c = []
+        
+        for item in data_c:
+            ch_upper = item['channel'].upper().replace(" ", "")
+            if any(j in ch_upper for j in jongpyeon_chs):
+                list_j.append(item)
+            else:
+                list_c.append(item)
+        
+        list_j.sort(key=lambda x: x['rating_val'], reverse=True)
+        list_c.sort(key=lambda x: x['rating_val'], reverse=True)
+                
+        # 4. 리포트 작성
+        report = f"📺 {date_str} 드라마 시청률 랭킹\n(닐슨코리아 / 어제 방영분)\n━━━━━━━━━━━━━━━━━━\n\n"
+        
+        def add_section(title, data_list):
+            txt = f"📡 {title}\n"
+            if data_list:
+                for i, item in enumerate(data_list[:5]):
+                    txt += f" {i+1}위 {item['title']} | ({item['channel']}) | {item['rating']}\n"
+            else:
+                txt += "(결방 또는 데이터 없음)\n"
+            return txt + "\n"
+
+        report += add_section("지상파", data_t)
+        report += add_section("종편", list_j)
+        report += add_section("케이블", list_c)
+        
+        report += "🔗 정보: 닐슨코리아"
+        
+        send_telegram(report)
+        print("--- 전송 완료 ---")
+        
+    except Exception as e:
+        # [핵심] 프로그램이 죽기 전에 에러 내용을 텔레그램으로 보냄
+        err_msg = traceback.format_exc()
+        print(f"🔥 치명적 오류 발생:\n{err_msg}")
+        send_telegram(f"🚨 봇 실행 중 오류 발생!\n\n{str(e)}")
+
+if __name__ == "__main__":
+    main()
