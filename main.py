@@ -24,10 +24,20 @@ def send_telegram(text):
 def get_similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# 정규화
+# 정규화 (비교용: 공백/특수문자 제거)
 def normalize(text):
     if not text: return ""
     return re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
+
+# 제목 정제 (표시용: 괄호 및 태그 제거)
+def clean_title_text(text):
+    # (일일연속극) 같은 괄호 제거
+    text = re.sub(r'\(.*?\)', '', text)
+    # <본>, <재> 같은 꺾쇠 괄호 제거
+    text = re.sub(r'<.*?>', '', text)
+    # 대괄호 제거
+    text = re.sub(r'\[.*?\]', '', text)
+    return text.strip()
 
 # [핵심] 닐슨 서버 응답 복구 (압축해제 + 인코딩)
 def get_decoded_html(response):
@@ -55,12 +65,14 @@ def get_wiki_drama_list():
     print("📋 위키백과 드라마 DB 구축 중...")
     drama_set = set()
     
+    # 최신작/예정작 수동 보완
     manual_list = [
         "결혼하자맹꽁아", "친절한선주씨", "스캔들", "심장을훔친게임", 
         "나의해리에게", "조립식가족", "이혼숙려캠프", "보물섬", 
         "모텔캘리포니아", "러브미", "스프링피버", "아이돌아이",
         "용감무쌍용수정", "세번째결혼", "우아한제국", "은애하는도적님아",
-        "첫번째남자", "친밀한리플리", "화려한날들", "판사이한영"
+        "첫번째남자", "친밀한리플리", "화려한날들", "판사이한영",
+        "마리와별난아빠들", "굿보이", "넉오프", "트리거", "하이퍼나이프"
     ]
     for m in manual_list:
         drama_set.add(normalize(m))
@@ -127,6 +139,10 @@ def fetch_nielsen_data(session, url, type_name):
                 raw_title = cols[2].get_text(strip=True)
                 rating = cols[3].get_text(strip=True)
                 
+                # 헤더 행 제외
+                if "시청률" in rating or "프로그램" in raw_title:
+                    continue
+                
                 try:
                     rating_val = float(rating.replace("%", "").strip())
                 except:
@@ -151,13 +167,23 @@ def filter_dramas(nielsen_data, wiki_db):
     
     for item in nielsen_data:
         raw_title = item['title']
+        
+        # 1. 괄호 안의 제목 추출
         match = re.search(r'\((.*?)\)', raw_title)
         extracted = match.group(1).strip() if match else raw_title
         
+        # 태그 제거
+        extracted = re.sub(r'<.*?>', '', extracted)
+        
         target_name = normalize(extracted)
         is_match = False
-        display_title = extracted
         
+        # 표시할 제목 (깔끔하게 정제)
+        display_title = clean_title_text(raw_title)
+        if match:
+             display_title = clean_title_text(match.group(1))
+
+        # 유사도 매칭
         best_score = 0.0
         for db_title in wiki_db:
             score = get_similarity(target_name, db_title)
@@ -167,6 +193,7 @@ def filter_dramas(nielsen_data, wiki_db):
         if best_score >= 0.6:
             is_match = True
         
+        # 키워드 보완
         if not is_match and any(k in raw_title for k in ["드라마", "미니시리즈", "연속극"]):
             is_match = True
 
@@ -175,14 +202,6 @@ def filter_dramas(nielsen_data, wiki_db):
             item['is_verified'] = True
             filtered.append(item)
     
-    # 데이터가 있는데 필터링이 0개면 상위 3개 강제 출력
-    if not filtered and nielsen_data:
-        print("   ⚠️ 필터링 0개 -> 상위 3개 강제 출력")
-        for item in nielsen_data[:3]:
-            item['display_title'] = item['title'] + "(미검증)"
-            item['is_verified'] = False
-            filtered.append(item)
-
     filtered.sort(key=lambda x: x['rating_val'], reverse=True)
     return filtered
 
@@ -194,42 +213,41 @@ def main():
         days = ["월", "화", "수", "목", "금", "토", "일"]
         date_str = yesterday.strftime(f"%Y-%m-%d({days[yesterday.weekday()]})")
         
-        print(f"--- 실행 시작 ({date_str} 기준) ---")
+        print(f"--- 실행 시작 ({date_str} / 수도권 기준) ---")
         
         wiki_db = get_wiki_drama_list()
         
         session = requests.Session()
         
-        # [수정됨] 사용자님이 찾은 URL 구조 적용 (area=00 전국 기준)
+        # [핵심] area=01 (수도권) 적용
         
-        # 1. 지상파 (sub_menu=1_1)
-        url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00"
+        # 1. 지상파
+        url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01"
         raw_t = fetch_nielsen_data(session, url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
         
         time.sleep(2)
         
-        # 2. 종편 (sub_menu=2_1)
-        url_j = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=2_1&area=00"
+        # 2. 종편
+        url_j = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=2_1&area=01"
         raw_j = fetch_nielsen_data(session, url_j, "종편")
         final_j = filter_dramas(raw_j, wiki_db)
 
         time.sleep(2)
 
-        # 3. 케이블 (sub_menu=3_1)
-        url_c = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=3_1&area=00"
+        # 3. 케이블
+        url_c = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=3_1&area=01"
         raw_c = fetch_nielsen_data(session, url_c, "케이블")
         final_c = filter_dramas(raw_c, wiki_db)
         
         # 리포트 작성
-        report = f"📺 {date_str} 드라마 시청률 랭킹\n(닐슨코리아 / 어제 방영분)\n━━━━━━━━━━━━━━━━━━\n\n"
+        report = f"📺 {date_str} 드라마 시청률 랭킹\n(닐슨코리아 / 수도권 / 어제 방영분)\n━━━━━━━━━━━━━━━━━━\n\n"
         
         def make_section(title, data):
             txt = f"📡 {title}\n"
             if data:
                 for i, item in enumerate(data[:5]):
-                    mark = "" if item.get('is_verified') else "❓"
-                    txt += f" {i+1}위 {mark}{item['display_title']} | ({item['channel']}) | {item['rating']}\n"
+                    txt += f" {i+1}위 {item['display_title']} | ({item['channel']}) | {item['rating']}\n"
             else:
                 txt += "(결방 또는 데이터 없음)\n"
             return txt + "\n"
