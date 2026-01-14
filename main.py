@@ -5,6 +5,8 @@ import os
 import re
 import traceback
 import time
+import gzip
+import io
 from difflib import SequenceMatcher
 
 # 1. 텔레그램 전송
@@ -69,34 +71,47 @@ def get_wiki_drama_list():
     print(f"✅ 비교군(Whitelist) 확보 완료: {len(drama_set)}개")
     return list(drama_set)
 
-# 3. 닐슨코리아 데이터 수집 (핵심 수정 적용)
+# 3. 닐슨코리아 데이터 수집 (압축 해제 로직 추가)
 def fetch_nielsen_data(session, url, type_name):
     print(f"[{type_name}] 닐슨 접속 시도: {url}")
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://www.nielsenkorea.co.kr/',
-        'Origin': 'https://www.nielsenkorea.co.kr'
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br' # 압축 지원한다고 명시
     }
     
     try:
         res = session.get(url, headers=headers, timeout=20)
         
-        # [🚨 핵심 수정] res.text를 쓰지 않고 res.content를 CP949로 강제 변환
-        # 이것이 외계어 문제를 해결합니다.
+        # [🚨 핵심 수정] GZIP 강제 압축 해제 시도
+        # 닐슨 서버가 헤더 없이 압축 데이터를 보낼 때를 대비함
+        html_bytes = res.content
         try:
-            html_content = res.content.decode('cp949', 'ignore')
+            # 앞 2바이트가 GZIP 매직 넘버(1f 8b)인지 확인하거나 그냥 풀어봄
+            buf = io.BytesIO(res.content)
+            f = gzip.GzipFile(fileobj=buf)
+            html_bytes = f.read()
+            print(f"   🔓 [{type_name}] GZIP 압축 해제 성공!")
         except:
-            html_content = res.content.decode('euc-kr', 'ignore')
+            # 압축이 아니면 원래 데이터 사용
+            pass
+            
+        # 그 다음 EUC-KR 디코딩
+        try:
+            html_content = html_bytes.decode('cp949', 'ignore')
+        except:
+            html_content = html_bytes.decode('euc-kr', 'ignore')
             
         soup = BeautifulSoup(html_content, 'html.parser')
         results = []
         
         table = soup.find("table", class_="ranking_tb")
         if not table:
-            print(f"   ❌ [{type_name}] 테이블 못 찾음 (HTML 구조 깨짐 의심)")
-            # 디버깅: 앞부분만 살짝 출력해서 한글인지 확인
-            print(f"   📄 디버깅(HTML 앞부분): {html_content[:100]}")
+            print(f"   ❌ [{type_name}] 테이블 못 찾음")
+            # 디버깅: 내용 살짝 출력
+            print(f"   📄 내용 일부: {html_content[:100].strip()}")
             return []
             
         rows = table.find_all("tr")
@@ -108,7 +123,7 @@ def fetch_nielsen_data(session, url, type_name):
             
             try:
                 channel = cols[1].get_text(strip=True)
-                raw_title = cols[2].get_text(strip=True) # 이제 한글로 나올 것임
+                raw_title = cols[2].get_text(strip=True)
                 rating = cols[3].get_text(strip=True)
                 
                 try:
@@ -151,7 +166,6 @@ def filter_dramas(nielsen_data, wiki_db):
             if score > best_score:
                 best_score = score
         
-        # 유사도 0.6 이상이면 합격
         if best_score >= 0.6:
             is_match = True
         
@@ -187,7 +201,6 @@ def main():
         
         wiki_db = get_wiki_drama_list()
         
-        # 세션 시작
         session = requests.Session()
         
         # 1. 지상파
@@ -195,7 +208,7 @@ def main():
         raw_t = fetch_nielsen_data(session, url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
         
-        time.sleep(3) # 필수 대기
+        time.sleep(3)
         
         # 2. 종편/케이블
         url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
