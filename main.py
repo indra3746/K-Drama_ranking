@@ -5,7 +5,7 @@ import os
 import re
 import traceback
 import time
-from difflib import SequenceMatcher # [핵심] 유사도 비교 도구
+from difflib import SequenceMatcher
 
 # 1. 텔레그램 전송
 def send_telegram(text):
@@ -18,21 +18,20 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# [핵심] 두 문자열의 유사도 계산 (0.0 ~ 1.0)
+# [핵심] 두 문자열의 유사도 계산
 def get_similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# 문자열 정규화 (공백/특수문자 제거 후 비교용)
+# 정규화
 def normalize(text):
     if not text: return ""
     return re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
 
-# 2. 위키백과 DB 구축 (Whitelist)
+# 2. 위키백과 DB 구축
 def get_wiki_drama_list():
     print("📋 위키백과 드라마 DB 구축 중...")
     drama_set = set()
     
-    # [비상용] 위키에 없어도 이건 꼭 챙겨라 (최신작)
     manual_list = [
         "결혼하자맹꽁아", "친절한선주씨", "스캔들", "심장을훔친게임", 
         "나의해리에게", "조립식가족", "이혼숙려캠프", "보물섬", 
@@ -43,7 +42,6 @@ def get_wiki_drama_list():
     for m in manual_list:
         drama_set.add(normalize(m))
     
-    # 위키백과 크롤링
     urls = [
         "https://ko.wikipedia.org/wiki/2025년_대한민국의_텔레비전_드라마_목록",
         "https://ko.wikipedia.org/wiki/2026년_대한민국의_텔레비전_드라마_목록"
@@ -69,23 +67,29 @@ def get_wiki_drama_list():
         except: pass
 
     print(f"✅ 비교군(Whitelist) 확보 완료: {len(drama_set)}개")
-    return list(drama_set) # 리스트로 변환하여 반환
+    return list(drama_set)
 
-# 3. 닐슨코리아 데이터 수집
+# 3. 닐슨코리아 데이터 수집 (Raw Byte 디코딩 적용)
 def fetch_nielsen_data(session, url, type_name):
     print(f"[{type_name}] 닐슨 접속 시도: {url}")
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Referer': 'https://www.nielsenkorea.co.kr/',
-        'Cache-Control': 'no-cache'
+        'Origin': 'https://www.nielsenkorea.co.kr'
     }
     
     try:
         res = session.get(url, headers=headers, timeout=20)
-        res.encoding = 'euc-kr' # 인코딩 고정
         
-        soup = BeautifulSoup(res.text, 'html.parser')
+        # [🚨 핵심 수정] res.text 대신 res.content를 가져와서 수동으로 디코딩
+        # 'cp949'는 euc-kr의 확장판으로 더 안전합니다.
+        try:
+            html_content = res.content.decode('cp949', 'ignore')
+        except:
+            html_content = res.content.decode('euc-kr', 'ignore')
+            
+        soup = BeautifulSoup(html_content, 'html.parser')
         results = []
         
         table = soup.find("table", class_="ranking_tb")
@@ -123,56 +127,48 @@ def fetch_nielsen_data(session, url, type_name):
         print(f"   ❌ [{type_name}] 접속 에러: {e}")
         return []
 
-# 4. 필터링 로직 (유사도 기반 매칭)
+# 4. 필터링 로직
 def filter_dramas(nielsen_data, wiki_db):
     filtered = []
     
     for item in nielsen_data:
         raw_title = item['title']
         
-        # 1. 괄호 추출: "일일드라마(결혼하자 맹꽁아)" -> "결혼하자 맹꽁아"
+        # 괄호 처리
         match = re.search(r'\((.*?)\)', raw_title)
         extracted = match.group(1).strip() if match else raw_title
         
-        # 비교를 위해 정규화
         target_name = normalize(extracted)
-        
         is_match = False
         display_title = extracted
         
-        # [유사도 매칭]
-        # 위키 DB와 비교하여 가장 높은 유사도를 찾음
+        # 유사도 매칭
         best_score = 0.0
-        
         for db_title in wiki_db:
             score = get_similarity(target_name, db_title)
             if score > best_score:
                 best_score = score
         
-        # 기준: 유사도가 0.6(60%) 이상이면 통과
         if best_score >= 0.6:
             is_match = True
-            # print(f"   ✅ 매칭(유사도 {best_score:.2f}): {raw_title}")
         
-        # [보완] 유사도가 낮아도 키워드가 있으면 통과
-        if not is_match:
-            if any(k in raw_title for k in ["드라마", "미니시리즈", "연속극"]):
-                is_match = True
+        # 키워드 보완
+        if not is_match and any(k in raw_title for k in ["드라마", "미니시리즈", "연속극"]):
+            is_match = True
 
         if is_match:
             item['display_title'] = display_title
             item['is_verified'] = True
             filtered.append(item)
     
-    # [안전장치] 만약 필터링 결과가 하나도 없다면? -> 상위 3개 강제 포함
+    # [안전장치] 하나도 없으면 상위 3개 강제 출력
     if not filtered and nielsen_data:
-        print("   ⚠️ 필터링 결과 0개 -> 상위 3개 강제 출력")
+        print("   ⚠️ 필터링 0개 -> 상위 3개 강제 출력")
         for item in nielsen_data[:3]:
             item['display_title'] = item['title'] + "(미검증)"
             item['is_verified'] = False
             filtered.append(item)
 
-    # 시청률 내림차순 정렬
     filtered.sort(key=lambda x: x['rating_val'], reverse=True)
     return filtered
 
@@ -188,6 +184,7 @@ def main():
         
         wiki_db = get_wiki_drama_list()
         
+        # 세션 시작 (쿠키 유지)
         session = requests.Session()
         
         # 1. 지상파
@@ -195,14 +192,14 @@ def main():
         raw_t = fetch_nielsen_data(session, url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
         
-        time.sleep(3) # 대기
+        time.sleep(3) # 필수 대기
         
         # 2. 종편/케이블
         url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
         raw_c = fetch_nielsen_data(session, url_c, "종편/케이블")
         final_c_all = filter_dramas(raw_c, wiki_db)
         
-        # 3. 리포트 분류
+        # 분류
         jongpyeon_chs = ["JTBC", "MBN", "TV CHOSUN", "TV조선", "채널A"]
         final_j = []
         final_c = []
@@ -217,7 +214,7 @@ def main():
         final_j.sort(key=lambda x: x['rating_val'], reverse=True)
         final_c.sort(key=lambda x: x['rating_val'], reverse=True)
         
-        # 4. 최종 메시지
+        # 리포트 작성
         report = f"📺 {date_str} 드라마 시청률 랭킹\n(닐슨코리아 / 어제 방영분)\n━━━━━━━━━━━━━━━━━━\n\n"
         
         def make_section(title, data):
@@ -234,7 +231,7 @@ def main():
         report += make_section("종편", final_j)
         report += make_section("케이블", final_c)
         
-        report += "🔗 정보: 닐슨코리아 / 위키백과"
+        report += "🔗 정보: 닐슨코리아"
         
         send_telegram(report)
         print("--- 전송 완료 ---")
