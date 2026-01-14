@@ -24,34 +24,30 @@ def send_telegram(text):
 def get_similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# 문자열 정규화
+# 정규화
 def normalize(text):
     if not text: return ""
     return re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
 
-# [핵심] 닐슨 서버의 괴상한 응답을 무조건 한글로 복구하는 함수
+# [핵심] 닐슨 서버 응답 복구 (압축해제 + 인코딩)
 def get_decoded_html(response):
-    # 1. Raw Byte 가져오기
     content = response.content
     
-    # 2. GZIP 압축 여부 확인 (매직 넘버 1f 8b)
-    # 닐슨은 헤더에 gzip이라고 안 쓰고 gzip을 보내기도 함
+    # GZIP 매직 넘버 확인
     if len(content) > 2 and content[:2] == b'\x1f\x8b':
         try:
             buf = io.BytesIO(content)
             with gzip.GzipFile(fileobj=buf) as f:
                 content = f.read()
-            print("   🔓 GZIP 압축 해제 성공")
-        except:
-            print("   ⚠️ GZIP 해제 실패, 원본 사용")
+        except: pass
             
-    # 3. 인코딩 변환 (CP949 > EUC-KR > UTF-8 순서로 시도)
+    # 한글 디코딩 (CP949 > EUC-KR)
     try:
         return content.decode('cp949')
-    except UnicodeDecodeError:
+    except:
         try:
             return content.decode('euc-kr')
-        except UnicodeDecodeError:
+        except:
             return content.decode('utf-8', 'ignore')
 
 # 2. 위키백과 DB 구축
@@ -98,19 +94,17 @@ def get_wiki_drama_list():
 
 # 3. 닐슨코리아 데이터 수집
 def fetch_nielsen_data(session, url, type_name):
-    print(f"[{type_name}] 닐슨 접속 시도: {url}")
+    print(f"[{type_name}] 접속: {url}")
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://www.nielsenkorea.co.kr/',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate' # 압축 환영
+        'Accept-Encoding': 'gzip, deflate'
     }
     
     try:
         res = session.get(url, headers=headers, timeout=20)
-        
-        # [핵심] 강력한 디코딩 함수 사용
         html_content = get_decoded_html(res)
             
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -118,13 +112,11 @@ def fetch_nielsen_data(session, url, type_name):
         
         table = soup.find("table", class_="ranking_tb")
         if not table:
-            print(f"   ❌ [{type_name}] 테이블 못 찾음")
-            # 디버깅: 앞부분 출력해서 한글 나오는지 확인
-            print(f"   📄 HTML 미리보기: {html_content[:100].strip()}")
+            print(f"   ❌ [{type_name}] 테이블 없음")
             return []
             
         rows = table.find_all("tr")
-        print(f"   ℹ️ {len(rows)}행 데이터 발견 (한글 복구 성공)")
+        print(f"   ℹ️ [{type_name}] {len(rows)}행 발견")
         
         for row in rows:
             cols = row.find_all("td")
@@ -150,7 +142,7 @@ def fetch_nielsen_data(session, url, type_name):
             
         return results
     except Exception as e:
-        print(f"   ❌ [{type_name}] 접속 에러: {e}")
+        print(f"   ❌ [{type_name}] 에러: {e}")
         return []
 
 # 4. 필터링 로직
@@ -159,8 +151,6 @@ def filter_dramas(nielsen_data, wiki_db):
     
     for item in nielsen_data:
         raw_title = item['title']
-        
-        # 괄호 처리
         match = re.search(r'\((.*?)\)', raw_title)
         extracted = match.group(1).strip() if match else raw_title
         
@@ -168,7 +158,6 @@ def filter_dramas(nielsen_data, wiki_db):
         is_match = False
         display_title = extracted
         
-        # 유사도 매칭
         best_score = 0.0
         for db_title in wiki_db:
             score = get_similarity(target_name, db_title)
@@ -178,7 +167,6 @@ def filter_dramas(nielsen_data, wiki_db):
         if best_score >= 0.6:
             is_match = True
         
-        # 키워드 보완
         if not is_match and any(k in raw_title for k in ["드라마", "미니시리즈", "연속극"]):
             is_match = True
 
@@ -187,7 +175,7 @@ def filter_dramas(nielsen_data, wiki_db):
             item['is_verified'] = True
             filtered.append(item)
     
-    # [안전장치] 매칭 결과 0개면 상위 3개 강제 출력
+    # 데이터가 있는데 필터링이 0개면 상위 3개 강제 출력
     if not filtered and nielsen_data:
         print("   ⚠️ 필터링 0개 -> 상위 3개 강제 출력")
         for item in nielsen_data[:3]:
@@ -212,32 +200,26 @@ def main():
         
         session = requests.Session()
         
-        # 1. 지상파
+        # [수정됨] 사용자님이 찾은 URL 구조 적용 (area=00 전국 기준)
+        
+        # 1. 지상파 (sub_menu=1_1)
         url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00"
         raw_t = fetch_nielsen_data(session, url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
         
-        time.sleep(3) # 필수 대기
+        time.sleep(2)
         
-        # 2. 종편/케이블
-        url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
-        raw_c = fetch_nielsen_data(session, url_c, "종편/케이블")
-        final_c_all = filter_dramas(raw_c, wiki_db)
-        
-        # 분류
-        jongpyeon_chs = ["JTBC", "MBN", "TV CHOSUN", "TV조선", "채널A"]
-        final_j = []
-        final_c = []
-        
-        for item in final_c_all:
-            ch_norm = normalize(item['channel']).upper()
-            if any(normalize(j).upper() in ch_norm for j in jongpyeon_chs):
-                final_j.append(item)
-            else:
-                final_c.append(item)
-        
-        final_j.sort(key=lambda x: x['rating_val'], reverse=True)
-        final_c.sort(key=lambda x: x['rating_val'], reverse=True)
+        # 2. 종편 (sub_menu=2_1)
+        url_j = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=2_1&area=00"
+        raw_j = fetch_nielsen_data(session, url_j, "종편")
+        final_j = filter_dramas(raw_j, wiki_db)
+
+        time.sleep(2)
+
+        # 3. 케이블 (sub_menu=3_1)
+        url_c = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=3_1&area=00"
+        raw_c = fetch_nielsen_data(session, url_c, "케이블")
+        final_c = filter_dramas(raw_c, wiki_db)
         
         # 리포트 작성
         report = f"📺 {date_str} 드라마 시청률 랭킹\n(닐슨코리아 / 어제 방영분)\n━━━━━━━━━━━━━━━━━━\n\n"
