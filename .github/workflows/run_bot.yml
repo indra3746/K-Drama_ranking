@@ -1,4 +1,4 @@
-name: Run K-Drama Ranking Bot
+name: Run Nielsen Ranking Bot
 
 on:
   schedule:
@@ -19,11 +19,11 @@ jobs:
         with:
           python-version: '3.9'
 
-      # [중요] 셀레니움과 크롬 드라이버 설치
+      # [중요] selenium 삭제, requests만 설치 (훨씬 빠름)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 selenium webdriver-manager
+          pip install requests beautifulsoup4
 
       - name: Run script
         env:
