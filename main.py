@@ -1,13 +1,22 @@
-import requests
-from bs4 import BeautifulSoup
+import time
 import datetime
 import os
+import requests
+from bs4 import BeautifulSoup
 
-# 텔레그램 전송 함수
+# 가상 브라우저(Selenium) 관련 라이브러리
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# 1. 텔레그램 전송 함수
 def send_telegram(text):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("CHAT_ID")
-    
     if token and chat_id and len(text) > 0:
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -15,118 +24,115 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 네이버 시청률 크롤링 함수
-def fetch_naver_ratings(category):
+# 2. 브라우저 세팅 함수
+def get_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # 화면 없이 실행
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    # 봇 탐지 방지용 헤더
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+    
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    return driver
+
+# 3. 네이버 크롤링 (Selenium 사용)
+def fetch_naver_ratings(driver, category):
     # 검색어: "지상파 드라마 시청률", "종편 드라마 시청률" 등
     query = f"{category} 드라마 시청률"
     url = f"https://search.naver.com/search.naver?where=nexearch&sm=tab_etc&query={query}"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    print(f"[{category}] 접속 중: {url}")
+    driver.get(url)
     
+    # 페이지 로딩 대기 (최대 5초)
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        results = []
-        
-        # 네이버 시청률 리스트 영역 선택
-        # 구조: div.rating_list > ul > li
-        rows = soup.select("div.rating_list > ul > li")
-        
-        # 최대 10위까지 수집
-        for row in rows[:10]:
-            try:
-                # 1. 순위
-                rank = row.select_one(".rank").get_text(strip=True)
-                
-                # 2. 제목
-                title_tag = row.select_one(".proc_tit") or row.select_one(".title") # 클래스명 변동 대비
-                title = title_tag.get_text(strip=True) if title_tag else "제목없음"
-                
-                # 3. 방송사
-                # 네이버는 방송사가 별도 태그로 잘 안나오고 텍스트 뭉치에 있거나 생략됨
-                # 드라마 탭 특성상 제목 옆이나 아래 sub_text 활용
-                channel = ""
-                sub_text = row.select_one(".sub_text")
-                if sub_text:
-                    channel = f"({sub_text.get_text(strip=True)})"
-                
-                # 4. 시청률
-                rating_tag = row.select_one(".rating_val") or row.select_one(".score")
-                rating = rating_tag.get_text(strip=True) if rating_tag else ""
-                
-                # 5. 변동폭
-                change = "-"
-                change_area = row.select_one(".fluctuation")
-                if change_area:
-                    # up, down, same 클래스 확인
-                    txt = change_area.get_text(strip=True)
-                    cls = change_area.get('class', [])
-                    
-                    if any("up" in c for c in cls):
-                        change = f"▲{txt}"
-                    elif any("down" in c for c in cls):
-                        change = f"▼{txt}"
-                    elif any("same" in c for c in cls):
-                        change = "-"
-                
-                # 결과 포맷팅: "1위 제목 | (방송사) | 12.8% | ▲0.3%"
-                line = f"{rank}위 {title} | {channel} | {rating} | {change}"
-                results.append(line)
-                
-            except Exception as e:
-                continue
-                
-        return results
-            
-    except Exception as e:
-        print(f"[{category}] 파싱 에러: {e}")
+        # 시청률 리스트가 뜰 때까지 기다림
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "rating_list"))
+        )
+        time.sleep(1) # 확실한 로딩을 위해 1초 추가 대기
+    except:
+        print(f"[{category}] 데이터 로딩 시간 초과 또는 없음")
         return []
 
-# 메인 실행 로직
+    # 로딩된 페이지의 소스 가져오기
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
+    results = []
+    
+    # 리스트 파싱
+    rows = soup.select("div.rating_list > ul > li")
+    
+    for row in rows[:10]: # 10위까지만
+        try:
+            rank = row.select_one(".rank").get_text(strip=True)
+            title = row.select_one(".proc_tit, .title").get_text(strip=True)
+            
+            # 방송사 (sub_text 또는 링크 안에서 찾기)
+            channel = ""
+            sub = row.select_one(".sub_text")
+            if sub:
+                channel = f"({sub.get_text(strip=True)})"
+            
+            # 시청률
+            rating = row.select_one(".rating_val, .score").get_text(strip=True)
+            
+            # 변동폭
+            change = "-"
+            fluct = row.select_one(".fluctuation")
+            if fluct:
+                txt = fluct.get_text(strip=True)
+                cls = str(fluct.get("class"))
+                if "up" in cls: change = f"▲{txt}"
+                elif "down" in cls: change = f"▼{txt}"
+                elif "same" in cls: change = "-"
+            
+            results.append(f"{rank}위 {title} | {channel} | {rating} | {change}")
+        except:
+            continue
+            
+    return results
+
+# 4. 메인 실행
 def main():
-    # 요일 구하기
+    driver = get_driver() # 브라우저 켜기
+    
     now = datetime.datetime.now()
     days = ["월", "화", "수", "목", "금", "토", "일"]
-    day_str = days[now.weekday()]
-    date_str = now.strftime(f"%Y-%m-%d({day_str})")
+    date_str = now.strftime(f"%Y-%m-%d({days[now.weekday()]})")
     
-    # 리포트 헤더
     report = f"📺 {date_str} 드라마 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n\n"
     
-    # 1. 지상파
-    report += "📡 지상파 (KBS/MBC/SBS)\n"
-    k_items = fetch_naver_ratings("지상파")
-    if k_items:
-        report += "\n".join(k_items)
-    else:
-        report += " (어제 방영된 드라마 없음 또는 집계 중)"
-    report += "\n\n"
-    
-    # 2. 종편
-    report += "📡 종편 (JTBC/MBN/TV조선/채널A)\n"
-    j_items = fetch_naver_ratings("종편")
-    if j_items:
-        report += "\n".join(j_items)
-    else:
-        report += " (어제 방영된 드라마 없음)"
-    report += "\n\n"
-    
-    # 3. 케이블
-    report += "📡 케이블 (tvN/ENA)\n"
-    c_items = fetch_naver_ratings("케이블")
-    if c_items:
-        report += "\n".join(c_items)
-    else:
-        report += " (어제 방영된 드라마 없음)"
-    report += "\n\n"
-    
-    report += "🔗 상세정보: 네이버 시청률 검색"
-    
-    # 전송
-    send_telegram(report)
+    try:
+        # 1. 지상파
+        report += "📡 지상파 (KBS/MBC/SBS)\n"
+        items = fetch_naver_ratings(driver, "지상파")
+        if items: report += "\n".join(items)
+        else: report += " (집계 중 또는 방영작 없음)"
+        report += "\n\n"
+        
+        # 2. 종편
+        report += "📡 종편 (JTBC/MBN/TV조선/채널A)\n"
+        items = fetch_naver_ratings(driver, "종편")
+        if items: report += "\n".join(items)
+        else: report += " (집계 중 또는 방영작 없음)"
+        report += "\n\n"
+        
+        # 3. 케이블
+        report += "📡 케이블 (tvN/ENA)\n"
+        items = fetch_naver_ratings(driver, "케이블")
+        if items: report += "\n".join(items)
+        else: report += " (집계 중 또는 방영작 없음)"
+        report += "\n\n"
+        
+        report += "🔗 상세정보: 네이버 시청률 검색"
+        
+        send_telegram(report)
+        
+    except Exception as e:
+        print(f"전체 에러 발생: {e}")
+    finally:
+        driver.quit() # 브라우저 끄기
 
 if __name__ == "__main__":
     main()
