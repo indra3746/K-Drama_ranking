@@ -18,7 +18,7 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# [핵심] 두 문자열의 유사도 계산
+# 유사도 계산
 def get_similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
@@ -69,7 +69,7 @@ def get_wiki_drama_list():
     print(f"✅ 비교군(Whitelist) 확보 완료: {len(drama_set)}개")
     return list(drama_set)
 
-# 3. 닐슨코리아 데이터 수집 (Raw Byte 디코딩 적용)
+# 3. 닐슨코리아 데이터 수집 (핵심 수정 적용)
 def fetch_nielsen_data(session, url, type_name):
     print(f"[{type_name}] 닐슨 접속 시도: {url}")
     
@@ -82,8 +82,8 @@ def fetch_nielsen_data(session, url, type_name):
     try:
         res = session.get(url, headers=headers, timeout=20)
         
-        # [🚨 핵심 수정] res.text 대신 res.content를 가져와서 수동으로 디코딩
-        # 'cp949'는 euc-kr의 확장판으로 더 안전합니다.
+        # [🚨 핵심 수정] res.text를 쓰지 않고 res.content를 CP949로 강제 변환
+        # 이것이 외계어 문제를 해결합니다.
         try:
             html_content = res.content.decode('cp949', 'ignore')
         except:
@@ -94,7 +94,9 @@ def fetch_nielsen_data(session, url, type_name):
         
         table = soup.find("table", class_="ranking_tb")
         if not table:
-            print(f"   ❌ [{type_name}] 테이블 못 찾음")
+            print(f"   ❌ [{type_name}] 테이블 못 찾음 (HTML 구조 깨짐 의심)")
+            # 디버깅: 앞부분만 살짝 출력해서 한글인지 확인
+            print(f"   📄 디버깅(HTML 앞부분): {html_content[:100]}")
             return []
             
         rows = table.find_all("tr")
@@ -106,7 +108,7 @@ def fetch_nielsen_data(session, url, type_name):
             
             try:
                 channel = cols[1].get_text(strip=True)
-                raw_title = cols[2].get_text(strip=True)
+                raw_title = cols[2].get_text(strip=True) # 이제 한글로 나올 것임
                 rating = cols[3].get_text(strip=True)
                 
                 try:
@@ -149,6 +151,7 @@ def filter_dramas(nielsen_data, wiki_db):
             if score > best_score:
                 best_score = score
         
+        # 유사도 0.6 이상이면 합격
         if best_score >= 0.6:
             is_match = True
         
@@ -184,7 +187,7 @@ def main():
         
         wiki_db = get_wiki_drama_list()
         
-        # 세션 시작 (쿠키 유지)
+        # 세션 시작
         session = requests.Session()
         
         # 1. 지상파
