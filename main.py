@@ -16,7 +16,7 @@ def send_telegram(text):
     if token and chat_id and len(text) > 0:
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
-            requests.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+            requests.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True}) # 링크 미리보기 끄기 (깔끔하게)
         except Exception as e:
             print(f"전송 실패: {e}")
 
@@ -31,11 +31,8 @@ def normalize(text):
 
 # 제목 정제 (표시용: 괄호 및 태그 제거)
 def clean_title_text(text):
-    # (일일연속극) 같은 괄호 제거
     text = re.sub(r'\(.*?\)', '', text)
-    # <본>, <재> 같은 꺾쇠 괄호 제거
     text = re.sub(r'<.*?>', '', text)
-    # 대괄호 제거
     text = re.sub(r'\[.*?\]', '', text)
     return text.strip()
 
@@ -168,22 +165,17 @@ def filter_dramas(nielsen_data, wiki_db):
     for item in nielsen_data:
         raw_title = item['title']
         
-        # 1. 괄호 안의 제목 추출
         match = re.search(r'\((.*?)\)', raw_title)
         extracted = match.group(1).strip() if match else raw_title
-        
-        # 태그 제거
         extracted = re.sub(r'<.*?>', '', extracted)
         
         target_name = normalize(extracted)
         is_match = False
         
-        # 표시할 제목 (깔끔하게 정제)
         display_title = clean_title_text(raw_title)
         if match:
              display_title = clean_title_text(match.group(1))
 
-        # 유사도 매칭
         best_score = 0.0
         for db_title in wiki_db:
             score = get_similarity(target_name, db_title)
@@ -193,7 +185,6 @@ def filter_dramas(nielsen_data, wiki_db):
         if best_score >= 0.6:
             is_match = True
         
-        # 키워드 보완
         if not is_match and any(k in raw_title for k in ["드라마", "미니시리즈", "연속극"]):
             is_match = True
 
@@ -218,8 +209,6 @@ def main():
         wiki_db = get_wiki_drama_list()
         
         session = requests.Session()
-        
-        # [핵심] area=01 (수도권) 적용
         
         # 1. 지상파
         url_t = "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01"
@@ -256,7 +245,8 @@ def main():
         report += make_section("종편", final_j)
         report += make_section("케이블", final_c)
         
-        report += "🔗 정보: 닐슨코리아"
+        # [수정] 링크 추가 (지상파 수도권 페이지 기준)
+        report += "🔗 정보: 닐슨코리아\nhttps://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01"
         
         send_telegram(report)
         print("--- 전송 완료 ---")
