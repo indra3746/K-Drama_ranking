@@ -1,104 +1,132 @@
-import os
 import requests
-import time
-from datetime import datetime
-import pytz
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+import datetime
+import os
 
-def get_news_data():
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+# 텔레그램 전송 함수
+def send_telegram(text):
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("CHAT_ID")
+    
+    if token and chat_id and len(text) > 0:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            requests.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+        except Exception as e:
+            print(f"전송 실패: {e}")
+
+# 네이버 시청률 크롤링 함수
+def fetch_naver_ratings(category):
+    # 검색어: "지상파 드라마 시청률", "종편 드라마 시청률" 등
+    query = f"{category} 드라마 시청률"
+    url = f"https://search.naver.com/search.naver?where=nexearch&sm=tab_etc&query={query}"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.get("https://m.entertain.naver.com/ranking")
-        print("🌐 네이버 연예 랭킹 접속 중 (20초 대기)...")
-        time.sleep(20)
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 기사 목록 전체를 감싸는 요소를 찾습니다.
-        items = driver.find_elements(By.CSS_SELECTOR, "li, [class*='item'], [class*='ranking']")
-        news_list = []
+        results = []
         
-        for item in items:
-            text = item.text.strip()
-            if "조회수" in text and len(text) > 20:
-                lines = text.split('\n')
-                # 보통 구조: [순위, 제목, 요약, "조회수", 숫자]
-                try:
-                    # 제목 찾기 (숫자만 있는 줄은 건너뜀)
-                    title = ""
-                    for line in lines:
-                        if len(line) > 10 and not line.isdigit():
-                            title = line
-                            break
-                    
-                    # 조회수 찾기
-                    views = "0"
-                    summary = ""
-                    for i, line in enumerate(lines):
-                        if "조회수" in line:
-                            views = lines[i+1] if i+1 < len(lines) else "확인불가"
-                            if i > 1: summary = lines[i-1]
-                            break
-                    
-                    if title and title not in [n['title'] for n in news_list]:
-                        news_list.append({
-                            'title': title,
-                            'summary': summary.replace(title, "").strip(),
-                            'views': views
-                        })
-                except: continue
-            if len(news_list) >= 10: break
+        # 네이버 시청률 리스트 영역 선택
+        # 구조: div.rating_list > ul > li
+        rows = soup.select("div.rating_list > ul > li")
+        
+        # 최대 10위까지 수집
+        for row in rows[:10]:
+            try:
+                # 1. 순위
+                rank = row.select_one(".rank").get_text(strip=True)
                 
-        return news_list
+                # 2. 제목
+                title_tag = row.select_one(".proc_tit") or row.select_one(".title") # 클래스명 변동 대비
+                title = title_tag.get_text(strip=True) if title_tag else "제목없음"
+                
+                # 3. 방송사
+                # 네이버는 방송사가 별도 태그로 잘 안나오고 텍스트 뭉치에 있거나 생략됨
+                # 드라마 탭 특성상 제목 옆이나 아래 sub_text 활용
+                channel = ""
+                sub_text = row.select_one(".sub_text")
+                if sub_text:
+                    channel = f"({sub_text.get_text(strip=True)})"
+                
+                # 4. 시청률
+                rating_tag = row.select_one(".rating_val") or row.select_one(".score")
+                rating = rating_tag.get_text(strip=True) if rating_tag else ""
+                
+                # 5. 변동폭
+                change = "-"
+                change_area = row.select_one(".fluctuation")
+                if change_area:
+                    # up, down, same 클래스 확인
+                    txt = change_area.get_text(strip=True)
+                    cls = change_area.get('class', [])
+                    
+                    if any("up" in c for c in cls):
+                        change = f"▲{txt}"
+                    elif any("down" in c for c in cls):
+                        change = f"▼{txt}"
+                    elif any("same" in c for c in cls):
+                        change = "-"
+                
+                # 결과 포맷팅: "1위 제목 | (방송사) | 12.8% | ▲0.3%"
+                line = f"{rank}위 {title} | {channel} | {rating} | {change}"
+                results.append(line)
+                
+            except Exception as e:
+                continue
+                
+        return results
+            
     except Exception as e:
-        print(f"❌ 에러 발생: {e}")
+        print(f"[{category}] 파싱 에러: {e}")
         return []
-    finally:
-        if 'driver' in locals(): driver.quit()
 
-def send_msg(content):
-    token = os.environ.get('TELEGRAM_TOKEN')
-    chat_id = os.environ.get('CHAT_ID')
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # 마크다운 없이 깔끔한 평문 발송
-    requests.post(url, json={"chat_id": chat_id, "text": content})
+# 메인 실행 로직
+def main():
+    # 요일 구하기
+    now = datetime.datetime.now()
+    days = ["월", "화", "수", "목", "금", "토", "일"]
+    day_str = days[now.weekday()]
+    date_str = now.strftime(f"%Y-%m-%d({day_str})")
+    
+    # 리포트 헤더
+    report = f"📺 {date_str} 드라마 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # 1. 지상파
+    report += "📡 지상파 (KBS/MBC/SBS)\n"
+    k_items = fetch_naver_ratings("지상파")
+    if k_items:
+        report += "\n".join(k_items)
+    else:
+        report += " (어제 방영된 드라마 없음 또는 집계 중)"
+    report += "\n\n"
+    
+    # 2. 종편
+    report += "📡 종편 (JTBC/MBN/TV조선/채널A)\n"
+    j_items = fetch_naver_ratings("종편")
+    if j_items:
+        report += "\n".join(j_items)
+    else:
+        report += " (어제 방영된 드라마 없음)"
+    report += "\n\n"
+    
+    # 3. 케이블
+    report += "📡 케이블 (tvN/ENA)\n"
+    c_items = fetch_naver_ratings("케이블")
+    if c_items:
+        report += "\n".join(c_items)
+    else:
+        report += " (어제 방영된 드라마 없음)"
+    report += "\n\n"
+    
+    report += "🔗 상세정보: 네이버 시청률 검색"
+    
+    # 전송
+    send_telegram(report)
 
-# --- 실행 및 리포트 구성 ---
-news_data = get_news_data()
-kst = pytz.timezone('Asia/Seoul')
-now = datetime.now(kst).strftime('%Y-%m-%d %H:%M')
-
-if news_data:
-    report = f"🤖 연예 뉴스 실시간 리포트 ({now})\n"
-    report += "━━━━━━━━━━━━━━━━━━\n\n"
-    
-    for i, item in enumerate(news_data, 1):
-        # 1. 순위 이모지 제목 / 조회수
-        report += f"{i}️⃣ {item['title']} / 조회수 {item['views']}\n"
-        
-        # 2. 요약 (평문)
-        if item['summary']:
-            report += f"{item['summary']}\n"
-        
-        # 3. 넓은 줄간격
-        report += "\n\n"
-    
-    report += "🔍 실시간 핵심 이슈 요약\n"
-    report += "• 안성기 배우 위독: 중환자실 집중 치료 중 응원 물결 지속\n"
-    report += "• 탁재훈 열애: 연예대상 현장 깜짝 발표로 온라인 화제\n\n"
-    report += "🔗 바로가기: https://m.entertain.naver.com/ranking"
-    
-    send_msg(report)
-    print(f"✅ {len(news_data)}개의 뉴스 발송 성공!")
-else:
-    send_msg(f"⚠️ {now} 기준 뉴스 데이터 수집 실패. 다시 시도합니다.")
+if __name__ == "__main__":
+    main()
