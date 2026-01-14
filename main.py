@@ -24,10 +24,35 @@ def send_telegram(text):
 def get_similarity(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
-# 정규화
+# 문자열 정규화
 def normalize(text):
     if not text: return ""
     return re.sub(r'[^가-힣a-zA-Z0-9]', '', text)
+
+# [핵심] 닐슨 서버의 괴상한 응답을 무조건 한글로 복구하는 함수
+def get_decoded_html(response):
+    # 1. Raw Byte 가져오기
+    content = response.content
+    
+    # 2. GZIP 압축 여부 확인 (매직 넘버 1f 8b)
+    # 닐슨은 헤더에 gzip이라고 안 쓰고 gzip을 보내기도 함
+    if len(content) > 2 and content[:2] == b'\x1f\x8b':
+        try:
+            buf = io.BytesIO(content)
+            with gzip.GzipFile(fileobj=buf) as f:
+                content = f.read()
+            print("   🔓 GZIP 압축 해제 성공")
+        except:
+            print("   ⚠️ GZIP 해제 실패, 원본 사용")
+            
+    # 3. 인코딩 변환 (CP949 > EUC-KR > UTF-8 순서로 시도)
+    try:
+        return content.decode('cp949')
+    except UnicodeDecodeError:
+        try:
+            return content.decode('euc-kr')
+        except UnicodeDecodeError:
+            return content.decode('utf-8', 'ignore')
 
 # 2. 위키백과 DB 구축
 def get_wiki_drama_list():
@@ -71,7 +96,7 @@ def get_wiki_drama_list():
     print(f"✅ 비교군(Whitelist) 확보 완료: {len(drama_set)}개")
     return list(drama_set)
 
-# 3. 닐슨코리아 데이터 수집 (압축 해제 로직 추가)
+# 3. 닐슨코리아 데이터 수집
 def fetch_nielsen_data(session, url, type_name):
     print(f"[{type_name}] 닐슨 접속 시도: {url}")
     
@@ -79,30 +104,14 @@ def fetch_nielsen_data(session, url, type_name):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://www.nielsenkorea.co.kr/',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br' # 압축 지원한다고 명시
+        'Accept-Encoding': 'gzip, deflate' # 압축 환영
     }
     
     try:
         res = session.get(url, headers=headers, timeout=20)
         
-        # [🚨 핵심 수정] GZIP 강제 압축 해제 시도
-        # 닐슨 서버가 헤더 없이 압축 데이터를 보낼 때를 대비함
-        html_bytes = res.content
-        try:
-            # 앞 2바이트가 GZIP 매직 넘버(1f 8b)인지 확인하거나 그냥 풀어봄
-            buf = io.BytesIO(res.content)
-            f = gzip.GzipFile(fileobj=buf)
-            html_bytes = f.read()
-            print(f"   🔓 [{type_name}] GZIP 압축 해제 성공!")
-        except:
-            # 압축이 아니면 원래 데이터 사용
-            pass
-            
-        # 그 다음 EUC-KR 디코딩
-        try:
-            html_content = html_bytes.decode('cp949', 'ignore')
-        except:
-            html_content = html_bytes.decode('euc-kr', 'ignore')
+        # [핵심] 강력한 디코딩 함수 사용
+        html_content = get_decoded_html(res)
             
         soup = BeautifulSoup(html_content, 'html.parser')
         results = []
@@ -110,12 +119,12 @@ def fetch_nielsen_data(session, url, type_name):
         table = soup.find("table", class_="ranking_tb")
         if not table:
             print(f"   ❌ [{type_name}] 테이블 못 찾음")
-            # 디버깅: 내용 살짝 출력
-            print(f"   📄 내용 일부: {html_content[:100].strip()}")
+            # 디버깅: 앞부분 출력해서 한글 나오는지 확인
+            print(f"   📄 HTML 미리보기: {html_content[:100].strip()}")
             return []
             
         rows = table.find_all("tr")
-        print(f"   ℹ️ {len(rows)}행 데이터 발견")
+        print(f"   ℹ️ {len(rows)}행 데이터 발견 (한글 복구 성공)")
         
         for row in rows:
             cols = row.find_all("td")
@@ -178,7 +187,7 @@ def filter_dramas(nielsen_data, wiki_db):
             item['is_verified'] = True
             filtered.append(item)
     
-    # [안전장치] 하나도 없으면 상위 3개 강제 출력
+    # [안전장치] 매칭 결과 0개면 상위 3개 강제 출력
     if not filtered and nielsen_data:
         print("   ⚠️ 필터링 0개 -> 상위 3개 강제 출력")
         for item in nielsen_data[:3]:
@@ -208,7 +217,7 @@ def main():
         raw_t = fetch_nielsen_data(session, url_t, "지상파")
         final_t = filter_dramas(raw_t, wiki_db)
         
-        time.sleep(3)
+        time.sleep(3) # 필수 대기
         
         # 2. 종편/케이블
         url_c = "https://www.nielsenkorea.co.kr/tv_cable_day.asp?menu=Tit_2&sub_menu=2_1&area=00"
