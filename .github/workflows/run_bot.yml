@@ -2,11 +2,11 @@ name: Run K-Drama Ranking Bot
 
 on:
   schedule:
-    # 한국 시간 매일 오전 9시 실행 (UTC 00:00)
-    # 분 시 일 월 요일
+    # 한국 시간 매일 오전 9시 00분 실행 (UTC 00:00)
+    # 주의: GitHub 서버 부하에 따라 10~30분 정도 늦게 시작될 수 있습니다.
     - cron: '0 0 * * *'
   
-  # 수동으로도 실행 가능하게 유지
+  # 수동으로도 즉시 실행 가능하게 하는 설정
   workflow_dispatch:
 
 jobs:
