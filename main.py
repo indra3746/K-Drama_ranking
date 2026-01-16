@@ -19,14 +19,11 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 제목 정제 (태그 제거만 수행)
+# 제목 정제 (공백만 정리)
 def clean_title(text):
-    # <본>, <재> 등 꺾쇠 괄호 내용 제거하지 않고 남길지, 지울지 결정
-    # 사용자가 '판단'하길 원하셨으므로, 지저분한 태그만 제거하고 (재) 같은건 남깁니다.
-    # 하지만 닐슨 원본은 보통 깔끔하므로 최소한의 공백 정리만 합니다.
     return text.strip()
 
-# 닐슨 응답 복구 (압축/인코딩 해결)
+# 닐슨 응답 복구
 def get_decoded_html(response):
     content = response.content
     if len(content) > 2 and content[:2] == b'\x1f\x8b':
@@ -43,7 +40,7 @@ def get_decoded_html(response):
         except:
             return content.decode('utf-8', 'ignore')
 
-# 닐슨 데이터 가져오기 (단순 수집)
+# 닐슨 데이터 가져오기
 def fetch_raw_data(session, url, label):
     print(f"[{label}] 데이터 수집 중...")
     headers = {
@@ -52,8 +49,8 @@ def fetch_raw_data(session, url, label):
         'Accept-Encoding': 'gzip, deflate'
     }
     
-    data_map = {} # 제목을 키로 사용하여 검색하기 위함
-    data_list = [] # 순서대로 저장하기 위함
+    data_map = {} 
+    data_list = [] 
     
     try:
         res = session.get(url, headers=headers, timeout=20)
@@ -75,7 +72,6 @@ def fetch_raw_data(session, url, label):
                 raw_title = cols[2].get_text(strip=True)
                 rating = cols[3].get_text(strip=True)
                 
-                # 헤더 제외
                 if "시청률" in rating or "프로그램" in raw_title: continue
                 
                 clean_t = clean_title(raw_title)
@@ -88,7 +84,7 @@ def fetch_raw_data(session, url, label):
                 }
                 
                 data_list.append(item)
-                data_map[clean_t] = rating # 제목으로 시청률 찾기용
+                data_map[clean_t] = rating 
                 rank_cursor += 1
                 
             except: continue
@@ -99,11 +95,11 @@ def fetch_raw_data(session, url, label):
         print(f"에러 발생 ({label}): {e}")
         return [], {}
 
-# 데이터 병합 및 리포트 생성
+# [수정됨] 리포트 섹션 생성 (짧은 포맷 적용)
 def make_report_section(title, url_metro, url_nation, session):
     # 1. 수도권 데이터 (기준)
     metro_list, _ = fetch_raw_data(session, url_metro, f"{title}-수도권")
-    time.sleep(1) # 매너 딜레이
+    time.sleep(1)
     
     # 2. 전국 데이터 (참조용)
     _, nation_map = fetch_raw_data(session, url_nation, f"{title}-전국")
@@ -115,7 +111,7 @@ def make_report_section(title, url_metro, url_nation, session):
         txt += "(데이터 없음)\n\n"
         return txt
         
-    # 3. 병합 및 출력 (상위 10개만, 원하시면 20개로 수정 가능)
+    # 3. 병합 및 출력
     count = 0
     for item in metro_list:
         if count >= 10: break 
@@ -124,11 +120,11 @@ def make_report_section(title, url_metro, url_nation, session):
         t_channel = item['channel']
         r_metro = item['rating']
         
-        # 전국 시청률 찾기 (없으면 - 표시)
+        # 전국 시청률 매칭
         r_nation = nation_map.get(t_title, "-")
         
-        # [출력 포맷] 1위 마리와별난아빠들 | (KBS1) | 수도권 9.2 | 전국 8.5
-        txt += f"{item['rank']}위 {t_title} | ({t_channel}) | 수도권 {r_metro} | 전국 {r_nation}\n"
+        # [수정된 포맷] 1위 KBS1 | 제목 | 9.2 | 10.7
+        txt += f"{item['rank']}위 {t_channel} | {t_title} | {r_metro} | {r_nation}\n"
         count += 1
         
     return txt + "\n"
@@ -145,14 +141,15 @@ def main():
         
         session = requests.Session()
         
-        # 리포트 헤더
-        full_report = f"📺 {date_str} 시청률 랭킹\n(닐슨코리아 / 수도권 기준 정렬)\n━━━━━━━━━━━━━━━━━━\n\n"
+        # [수정됨] 헤더 및 범례 적용
+        full_report = f"📺 {date_str} 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n"
+        full_report += "순위 채널 | 제목 | 수도권 | 전국\n\n"
         
-        # 1. 지상파 (수도권 vs 전국)
+        # 1. 지상파
         full_report += make_report_section(
             "지상파",
-            "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01", # 수도권
-            "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00", # 전국
+            "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01",
+            "https://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=00",
             session
         )
         
@@ -172,15 +169,4 @@ def main():
             session
         )
         
-        full_report += "🔗 정보: 닐슨코리아\nhttps://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01"
-        
-        send_telegram(full_report)
-        print("--- 전송 완료 ---")
-        
-    except Exception as e:
-        err = traceback.format_exc()
-        print(f"🔥 에러: {err}")
-        send_telegram(f"🚨 에러 발생: {e}")
-
-if __name__ == "__main__":
-    main()
+        full_report += "🔗 닐슨코리아
