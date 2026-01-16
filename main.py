@@ -19,7 +19,7 @@ def send_telegram(text):
         except Exception as e:
             print(f"전송 실패: {e}")
 
-# 제목 정제 (공백만 정리)
+# 제목 정제 (단순 공백 제거)
 def clean_title(text):
     return text.strip()
 
@@ -95,7 +95,7 @@ def fetch_raw_data(session, url, label):
         print(f"에러 발생 ({label}): {e}")
         return [], {}
 
-# [수정됨] 리포트 섹션 생성 (짧은 포맷 적용)
+# 리포트 섹션 생성 (순위 채널 | 제목 | 수도권 | 전국)
 def make_report_section(title, url_metro, url_nation, session):
     # 1. 수도권 데이터 (기준)
     metro_list, _ = fetch_raw_data(session, url_metro, f"{title}-수도권")
@@ -120,10 +120,10 @@ def make_report_section(title, url_metro, url_nation, session):
         t_channel = item['channel']
         r_metro = item['rating']
         
-        # 전국 시청률 매칭
+        # 전국 시청률 매칭 (없으면 - 표시)
         r_nation = nation_map.get(t_title, "-")
         
-        # [수정된 포맷] 1위 KBS1 | 제목 | 9.2 | 10.7
+        # [포맷] 1위 KBS1 | 제목 | 9.2 | 10.7
         txt += f"{item['rank']}위 {t_channel} | {t_title} | {r_metro} | {r_nation}\n"
         count += 1
         
@@ -141,7 +141,7 @@ def main():
         
         session = requests.Session()
         
-        # [수정됨] 헤더 및 범례 적용
+        # 헤더 및 범례
         full_report = f"📺 {date_str} 시청률 랭킹\n━━━━━━━━━━━━━━━━━━\n"
         full_report += "순위 채널 | 제목 | 수도권 | 전국\n\n"
         
@@ -169,4 +169,15 @@ def main():
             session
         )
         
-        full_report += "🔗 닐슨코리아
+        full_report += "🔗 닐슨코리아\nhttps://www.nielsenkorea.co.kr/tv_terrestrial_day.asp?menu=Tit_1&sub_menu=1_1&area=01"
+        
+        send_telegram(full_report)
+        print("--- 전송 완료 ---")
+        
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"🔥 에러: {err}")
+        send_telegram(f"🚨 에러 발생: {e}")
+
+if __name__ == "__main__":
+    main()
