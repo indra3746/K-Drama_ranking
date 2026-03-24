@@ -9,16 +9,20 @@ on:
   # 수동 실행 기능
   workflow_dispatch:
 
+# [추가됨] keepalive-workflow가 60일 방지용 더미 커밋을 남길 수 있도록 쓰기 권한 부여
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # [수정됨] v3 -> v4 로 올려서 Node.js 경고 해결
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5  # [수정됨] v4 -> v5 로 올려서 Node.js 경고 해결
         with:
           python-version: '3.9'
 
@@ -32,3 +36,8 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
+
+      # [추가됨] 60일 비활성화 방지용 코드
+      # 깃허브가 활동이 없다고 판단하기 전에 알아서 빈 기록을 남겨 봇을 살려둡니다.
+      - name: Keepalive Workflow
+        uses: gautamkrishnar/keepalive-workflow@v2
