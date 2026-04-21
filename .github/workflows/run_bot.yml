@@ -2,9 +2,8 @@ name: Run K-Drama Ranking Bot
 
 on:
   schedule:
-    # 한국 시간 매일 오전 8시 45분 실행
-    # (UTC 기준 전날 23시 45분 -> 서버가 한산해서 아주 좋습니다 👍)
-    - cron: '45 23 * * *'
+    # 🚨 전 세계 봇 출근 시간을 피해서 오전 8시 17분으로 꼼수 세팅! (UTC 23:17)
+    - cron: '17 23 * * *'
   
   # 수동 실행 기능
   workflow_dispatch:
@@ -12,7 +11,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env: #
+    env: # Node.js 24버전 경고 해결용
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout code
